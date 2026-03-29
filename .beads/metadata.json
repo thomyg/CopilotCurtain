@@ -1,0 +1,7 @@
+{
+  "database": "dolt",
+  "backend": "dolt",
+  "dolt_mode": "server",
+  "dolt_database": "CopilotCurtain",
+  "project_id": "d5dc1496-b8c5-4ecd-b27b-a363e409a37e"
+}
