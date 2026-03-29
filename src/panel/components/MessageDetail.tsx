@@ -2,21 +2,25 @@ import React, { useState } from 'react';
 import type { CopilotWSMessage } from '../../shared/types';
 import { MESSAGE_TYPE_CONFIG } from '../../shared/constants';
 import JsonTree from './JsonTree';
+import PromptInspector from './PromptInspector';
+import GroundingMap from './GroundingMap';
 
 interface Props {
   message: CopilotWSMessage;
   onClose: () => void;
 }
 
-type Tab = 'parsed' | 'sources' | 'raw';
+type Tab = 'parsed' | 'grounding' | 'sources' | 'raw';
 
 export default function MessageDetail({ message, onClose }: Props) {
   const [tab, setTab] = useState<Tab>('parsed');
   const config = MESSAGE_TYPE_CONFIG[message.parsed.type] || MESSAGE_TYPE_CONFIG.unknown;
   const p = message.parsed;
 
+  const hasGrounding = (p.responseText || p.rawTextWithMarkers) && p.sources && p.sources.length > 0;
   const tabs: { id: Tab; label: string }[] = [
-    { id: 'parsed', label: 'Parsed' },
+    { id: 'parsed', label: p.type === 'user_prompt' ? 'Prompt' : 'Parsed' },
+    ...(hasGrounding ? [{ id: 'grounding' as Tab, label: 'Grounding' }] : []),
     ...(p.sources && p.sources.length > 0 ? [{ id: 'sources' as Tab, label: `Sources (${p.sources.length})` }] : []),
     { id: 'raw', label: 'Raw Frame' },
   ];
@@ -56,7 +60,17 @@ export default function MessageDetail({ message, onClose }: Props) {
       {/* Content */}
       <div className="flex-1 overflow-auto p-3">
         {tab === 'parsed' && (
-          <ParsedView parsed={p} />
+          p.type === 'user_prompt'
+            ? <PromptInspector parsed={p} />
+            : <ParsedView parsed={p} />
+        )}
+
+        {tab === 'grounding' && p.sources && (
+          <GroundingMap
+            responseText={p.rawTextWithMarkers || p.responseText || ''}
+            adaptiveCardText={p.adaptiveCards?.[0] && typeof (p.adaptiveCards[0] as any).body?.[0]?.text === 'string' ? (p.adaptiveCards[0] as any).body[0].text : undefined}
+            sources={p.sources}
+          />
         )}
 
         {tab === 'sources' && p.sources && (

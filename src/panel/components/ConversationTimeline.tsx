@@ -3,6 +3,7 @@ import type { CopilotWSMessage, CopilotConversation } from '../../shared/types';
 import { MESSAGE_TYPE_CONFIG } from '../../shared/constants';
 import { useStore, useFetchMessages } from '../hooks/useStore';
 import MessageDetail from './MessageDetail';
+import ExportButton from './ExportButton';
 
 interface Props {
   conversation: CopilotConversation;
@@ -142,7 +143,8 @@ export default function ConversationTimeline({ conversation, groupIds }: Props) 
         <span className="text-sm" style={{ color: 'var(--text-muted)' }}>—</span>
         <span className="text-sm truncate" style={{ color: 'var(--text-secondary)' }}>{conversation.tabTitle}</span>
         <div className="flex-1" />
-        <span className="text-xs" style={{ color: 'var(--text-muted)' }}>{meaningful.length} events</span>
+        <ExportButton conversation={conversation} />
+        <span className="text-xs ml-2" style={{ color: 'var(--text-muted)' }}>{meaningful.length} events</span>
       </div>
 
       {/* Filter bar */}

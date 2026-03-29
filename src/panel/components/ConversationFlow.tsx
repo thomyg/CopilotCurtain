@@ -2,6 +2,8 @@ import React, { useEffect, useState, useMemo } from 'react';
 import type { CopilotWSMessage, CopilotConversation } from '../../shared/types';
 import { useStore, useFetchMessages } from '../hooks/useStore';
 import MessageDetail from './MessageDetail';
+import TimingBreakdown from './TimingBreakdown';
+import ExportButton from './ExportButton';
 
 interface Props {
   conversation: CopilotConversation;
@@ -62,12 +64,13 @@ export default function ConversationFlow({ conversation, groupIds }: Props) {
     <div className="flex flex-col h-full">
       {/* Header */}
       <div className="px-3 py-2 flex items-center gap-2" style={{ borderBottom: '1px solid var(--border)' }}>
-        <span style={{ color: 'var(--accent-text)' }}>⚡</span>
         <span className="text-sm font-medium" style={{ color: 'var(--text-primary)' }}>Flow — {conversation.surface}</span>
         <span className="text-sm" style={{ color: 'var(--text-muted)' }}>—</span>
         <span className="text-sm truncate" style={{ color: 'var(--text-secondary)' }}>
           {conversation.defaultChatName || conversation.firstPrompt || conversation.tabTitle}
         </span>
+        <div className="flex-1" />
+        <ExportButton conversation={conversation} />
       </div>
 
       {/* Flow visualization */}
@@ -77,15 +80,22 @@ export default function ConversationFlow({ conversation, groupIds }: Props) {
             Waiting for conversation events...
           </div>
         ) : (
-          <div className="relative">
+          <div>
+            {/* Timing breakdown */}
+            <div className="mb-4">
+              <TimingBreakdown messages={messages} />
+            </div>
+
+            {/* Flow steps */}
+            <div className="relative">
             {/* Vertical line */}
             <div
               className="absolute left-[18px] top-4 bottom-4"
               style={{ width: '2px', background: 'var(--border)' }}
             />
 
-            {steps.map((step, i) => {
-              const isSelected = selectedMsg?.id === step.message?.id;
+            {steps.map((step: FlowStep, i: number) => {
+              const isSelected = step.message && selectedMsg?.id === step.message.id;
               const isLast = i === steps.length - 1;
 
               return (
@@ -125,20 +135,20 @@ export default function ConversationFlow({ conversation, groupIds }: Props) {
                     </div>
 
                     {/* Source/suggestion badges */}
-                    {(step.sourceCount || step.suggestedCount) && (
+                    {(step.sourceCount || step.suggestedCount) ? (
                       <div className="flex gap-2 mt-1">
                         {step.sourceCount ? (
                           <span className="text-[11px] px-1.5 py-0.5 rounded" style={{ background: 'var(--accent-bg)', color: 'var(--accent-text)' }}>
-                            📄 {step.sourceCount} sources
+                            {step.sourceCount} sources
                           </span>
                         ) : null}
                         {step.suggestedCount ? (
                           <span className="text-[11px] px-1.5 py-0.5 rounded" style={{ background: 'var(--bg-secondary)', color: 'var(--text-secondary)' }}>
-                            💡 {step.suggestedCount} suggestions
+                            {step.suggestedCount} suggestions
                           </span>
                         ) : null}
                       </div>
-                    )}
+                    ) : null}
 
                     {/* Nested steps (search sub-steps) */}
                     {step.children && step.children.length > 0 && (
@@ -159,6 +169,7 @@ export default function ConversationFlow({ conversation, groupIds }: Props) {
                 </div>
               );
             })}
+            </div>
           </div>
         )}
       </div>
