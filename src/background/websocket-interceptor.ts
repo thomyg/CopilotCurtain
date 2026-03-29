@@ -95,6 +95,71 @@ export function getAttachedTabs(): number[] {
   return Array.from(attachedTabs);
 }
 
+// ---- Orphan socket adoption ----
+// When the debugger attaches after a WebSocket is already open, we never get
+// Network.webSocketCreated. Detect Copilot traffic by inspecting frame content
+// and create a conversation on-the-fly.
+
+const rejectedRequestIds = new Set<string>();
+
+function looksLikeCopilotFrame(raw: string): boolean {
+  if (!raw) return false;
+  // SignalR frames use Record Separator (0x1E) delimiter
+  const hasRecordSeparator = raw.includes('\x1e');
+  // Check for Copilot-specific JSON structure
+  try {
+    const cleaned = raw.split('\x1e').filter(Boolean)[0];
+    if (!cleaned) return hasRecordSeparator;
+    const json = JSON.parse(cleaned);
+    // SignalR handshake
+    if (json.protocol && json.version) return true;
+    // SignalR hub invocation (target: "chat" or arguments with Copilot structure)
+    if (json.target === 'chat') return true;
+    // Streaming messages with arguments containing messages array
+    if (json.type && json.arguments?.[0]?.messages) return true;
+    // Type 1-7 are SignalR message types
+    if (hasRecordSeparator && typeof json.type === 'number' && json.type >= 1 && json.type <= 7) return true;
+  } catch {
+    // Not JSON — could be binary MessagePack; accept if it has record separators
+  }
+  return false;
+}
+
+function tryAdoptOrphanSocket(tabId: number, requestId: string, raw: string): string | undefined {
+  if (rejectedRequestIds.has(requestId)) return undefined;
+
+  if (!looksLikeCopilotFrame(raw)) {
+    rejectedRequestIds.add(requestId);
+    return undefined;
+  }
+
+  // This looks like Copilot traffic — create a conversation
+  const conversationId = crypto.randomUUID();
+  socketConversations.set(requestId, conversationId);
+
+  getTabInfo(tabId).then(({ url: tabUrl, title: tabTitle }) => {
+    const conversation: CopilotConversation = {
+      id: conversationId,
+      tabId,
+      tabUrl,
+      tabTitle,
+      startedAt: Date.now(),
+      lastMessageAt: Date.now(),
+      messageCount: 0,
+      surface: detectSurface(tabUrl),
+    };
+    conversations.set(conversationId, conversation);
+
+    if (onConversationUpdate) {
+      onConversationUpdate(conversation);
+    }
+
+    console.log(`[CopilotCurtain] Adopted pre-existing Copilot WebSocket (requestId=${requestId})`);
+  });
+
+  return conversationId;
+}
+
 // ---- Redact tokens from WebSocket URL ----
 
 function redactWsUrl(url: string): string {
@@ -134,16 +199,26 @@ function handleWebSocketCreated(tabId: number, params: any) {
 }
 
 function handleFrameSent(tabId: number, params: any) {
-  const conversationId = socketConversations.get(params.requestId);
-  if (!conversationId) return;
+  let conversationId = socketConversations.get(params.requestId);
+
+  if (!conversationId) {
+    // WebSocket was open before debugger attached — try to adopt it
+    conversationId = tryAdoptOrphanSocket(tabId, params.requestId, params.response?.payloadData || '');
+    if (!conversationId) return;
+  }
 
   const raw = params.response?.payloadData || '';
   processFrame(conversationId, tabId, raw, 'sent');
 }
 
 function handleFrameReceived(tabId: number, params: any) {
-  const conversationId = socketConversations.get(params.requestId);
-  if (!conversationId) return;
+  let conversationId = socketConversations.get(params.requestId);
+
+  if (!conversationId) {
+    // WebSocket was open before debugger attached — try to adopt it
+    conversationId = tryAdoptOrphanSocket(tabId, params.requestId, params.response?.payloadData || '');
+    if (!conversationId) return;
+  }
 
   const raw = params.response?.payloadData || '';
   processFrame(conversationId, tabId, raw, 'received');
@@ -164,7 +239,7 @@ function processFrame(conversationId: string, tabId: number, raw: string, direct
       timestamp: Date.now(),
       direction,
       tabId,
-      rawPayload: raw.length > 50000 ? raw.slice(0, 50000) + '\n[TRUNCATED]' : raw,
+      rawPayload: raw.length > 500000 ? raw.slice(0, 500000) + '\n[TRUNCATED]' : raw,
       messageType: frame.messageType,
       parsed: frame.parsed,
     };
@@ -174,6 +249,28 @@ function processFrame(conversationId: string, tabId: number, raw: string, direct
     if (conversation) {
       conversation.lastMessageAt = Date.now();
       conversation.messageCount++;
+
+      // Capture first user prompt as conversation name + agent detection
+      if (frame.parsed.type === 'user_prompt') {
+        if (!conversation.firstPrompt && frame.parsed.promptText) {
+          conversation.firstPrompt = frame.parsed.promptText;
+        }
+        if (frame.parsed.isAgent) {
+          conversation.isAgent = true;
+          conversation.agentId = frame.parsed.agentId;
+        }
+      }
+
+      // Capture defaultChatName and sensitivity from Type 2 conversation_state
+      if (frame.parsed.type === 'conversation_state') {
+        if (frame.parsed.defaultChatName) {
+          conversation.defaultChatName = frame.parsed.defaultChatName;
+        }
+        if (frame.parsed.sensitivityLabel) {
+          conversation.sensitivityLabel = frame.parsed.sensitivityLabel.displayName;
+          conversation.sensitivityColor = frame.parsed.sensitivityLabel.color;
+        }
+      }
       if (onConversationUpdate) {
         onConversationUpdate(conversation);
       }

@@ -1,41 +1,39 @@
-# 🎭 CopilotCurtain
+# CopilotCurtain
 
-A Chrome/Edge extension for **M365 Copilot developers and IT Pros** — see exactly what Copilot does behind the scenes: plugin selection, search queries, grounding sources, and the full prompt-to-response pipeline.
+A Chrome/Edge developer extension that makes M365 Copilot's internal communication visible. See exactly what happens when Copilot processes a prompt: the search queries, grounding sources, plugin invocations, streaming tokens, sensitivity labels, and the full prompt-to-response pipeline — all decoded in real-time from the WebSocket protocol.
+
+Built for developers building Copilot plugins and declarative agents, IT pros auditing data access, and anyone who wants to understand how M365 Copilot actually works under the hood.
+
+![CopilotCurtain screenshot](docs/screenshot.png)
 
 ## What It Does
 
-CopilotCurtain captures and decodes Microsoft 365 Copilot's real-time communication, giving you visibility into:
+CopilotCurtain attaches to Copilot's SignalR WebSocket connection (`substrate.office.com`) via Chrome DevTools Protocol and decodes every frame in real-time:
 
 | Feature | Description |
 |---------|-------------|
-| **🤖 WebSocket Decoder** | Intercepts and decodes Copilot's WebSocket protocol (`substrate.office.com/m365chat/SecuredChathub`) in real-time |
-| **🔌 Plugin Inspector** | See all loaded plugins, their configs, invocation rates, success/failure stats, and latency |
-| **🔍 Search Query Viewer** | Watch the `SubstrateSearchService` queries Copilot runs against your tenant data |
-| **📄 Source Attribution** | See which files, emails, chats, and meetings Copilot grounded its response on |
-| **📡 HTTP Traffic** | Capture Copilot-related HTTP calls (Graph, Substrate, plugin APIs, auth) |
-| **🧑 Prompt Tracking** | Full prompt → search → plugin → grounding → response pipeline |
+| **WebSocket Decoder** | Decodes Copilot's SignalR JSON protocol — handshakes, streaming tokens, snapshots, progress messages, and completion signals |
+| **Source Attribution** | Parses `sourceAttributions` with full `referenceMetadata` — file type (Word, PowerPoint, Email, Teams Chat, Meeting, etc.), author, data source, citation references |
+| **Search Visibility** | Shows Copilot's search progress messages and tracks how `sourceAttributions` accumulate during grounding (2 → 5 → 11 → 62 sources) |
+| **Agent Detection** | Automatically identifies declarative agent conversations vs. mainline chat via `gpts[]` and `threadLevelGptId` in the prompt payload |
+| **Sensitivity Labels** | Surfaces Microsoft Information Protection labels on conversations (e.g. "Intern", "Allgemein") |
+| **Conversation Flow** | Visual pipeline view: Prompt → Search → Streaming → Response → Sources, with timing between each stage |
+| **Plugin Inspector** | Plugin registry from `/userconfig`, invocation tracking with request/response correlation |
+| **HTTP Traffic** | Captures Copilot-related HTTP calls (Graph, Substrate, plugin APIs, auth) with header redaction |
 
 ## Who Is This For?
 
-- **Copilot Plugin Developers** — Debug why your plugin isn't being selected or invoked
-- **Declarative Agent Builders** — Understand the full conversation lifecycle
-- **IT Pros** — Audit what data Copilot accesses in your tenant
-- **M365 Consultants** — Demonstrate Copilot behavior to clients
-- **Copilot Readiness Teams** — Validate data quality and grounding before rollout
+- **Copilot Plugin / Agent Developers** — Debug the full conversation lifecycle, see how your agent is invoked, inspect the raw frames
+- **IT Pros / Compliance** — Audit what data Copilot accesses, verify sensitivity labels, review source attributions
+- **M365 Consultants** — Demonstrate and explain Copilot's internal behavior to customers
+- **Copilot Readiness Teams** — Validate data quality and grounding before tenant-wide rollout
 
 ## Installation
 
-### From Source
-
 ```bash
-# Clone the repo
 git clone https://github.com/thomyg/CopilotCurtain.git
 cd CopilotCurtain
-
-# Install dependencies
 npm install
-
-# Build
 npm run build
 ```
 
@@ -48,55 +46,31 @@ npm run build
 
 ## Usage
 
-### Quick Start
-
 1. Click the CopilotCurtain icon in your browser toolbar
-2. Toggle **🤖 Copilot WebSocket** ON to start capturing Copilot conversations
-3. Toggle **📡 HTTP Traffic** ON to capture related API calls
-4. Click **📊 Open Dashboard** to open the full side panel
-5. Open M365 Copilot (Teams, M365 Chat, Word, etc.) and start a conversation
-6. Watch the conversation appear in real-time in the dashboard
+2. Toggle **WS** (WebSocket capture) ON
+3. Open the side panel dashboard
+4. Open M365 Copilot in another tab and start a conversation
+5. Watch the conversation appear in real-time — prompts, search progress, streaming, sources, and the final response
 
-### Dashboard Views
+### Views
 
-- **🤖 Copilot** — Conversation list + timeline showing prompts, search queries, plugin calls, and responses
-- **🔌 Plugins** — Registry of all loaded plugins with health stats and invocation history
-- **📡 HTTP** — Raw HTTP traffic for Copilot-related API calls
+- **Timeline** — Filterable event list (Key Events, Searches, Plugins, All) with collapsible streaming chunks and full detail pane (Parsed / Sources / Raw Frame with JSON tree viewer)
+- **Flow** — Visual pipeline diagram showing the conversation stages with timing between steps
+- **Plugins** — Plugin registry with health metrics and invocation history
+- **HTTP** — Virtualized HTTP traffic list with category filtering
 
-### Important Notes
+### Key Details
 
-- **WebSocket capture uses `chrome.debugger`** — Chrome/Edge will show a "CopilotCurtain started debugging this tab" banner. This is required to capture WebSocket frames and cannot be avoided.
-- **Tokens are redacted** — Bearer tokens, cookies, and sensitive headers are automatically truncated in storage and display.
-- **Privacy first** — All data stays local in your browser's IndexedDB. Nothing is sent externally.
-
-## Architecture
-
-```
-┌─────────────────────────────────────────────────────┐
-│              CopilotCurtain Extension                 │
-├──────────────┬──────────────┬───────────────────────┤
-│  Background  │  WebSocket   │    Side Panel UI       │
-│  Service     │  Interceptor │    (React + Tailwind)  │
-│  Worker      │  (debugger)  │                        │
-│              │              │  🤖 Conversations      │
-│  - HTTP      │  - CDP       │  🔌 Plugin Dashboard   │
-│    intercept │  - Copilot   │  📡 HTTP Traffic       │
-│  - Plugin    │    decoder   │  📄 Source Viewer       │
-│    tracker   │  - Frame     │                        │
-│              │    parser    │                        │
-├──────────────┴──────────────┴───────────────────────┤
-│                  IndexedDB Storage                    │
-│  conversations | ws_messages | plugins |              │
-│  plugin_invocations | requests | sessions             │
-└─────────────────────────────────────────────────────┘
-```
+- **WebSocket capture requires `chrome.debugger`** — the browser will show a debugging banner on captured tabs. This is the only way to access WebSocket frame payloads in Manifest V3.
+- **Tokens are redacted** — Bearer tokens, cookies, and sensitive headers are automatically truncated.
+- **All data stays local** — stored in browser IndexedDB. Nothing is sent externally.
 
 ## Tech Stack
 
 - **TypeScript** + **React 18** + **Tailwind CSS**
 - **Vite** for building
-- **zustand** for state management
-- **idb** for IndexedDB access
+- **Zustand** for state management
+- **idb** for IndexedDB
 - **@tanstack/react-virtual** for virtualized lists
 - **Chrome Manifest V3** with `webRequest` + `debugger` APIs
 
@@ -104,20 +78,20 @@ npm run build
 
 ```bash
 npm run dev      # Vite dev server
-npm run build    # Production build → dist/
+npm run build    # Production build -> dist/
 npm run zip      # Build + zip for distribution
 ```
 
 ## Contributing
 
-Contributions welcome! Areas that need work:
+Contributions welcome. Areas that need work:
 
-- [ ] SignalR/MessagePack binary frame decoding
-- [ ] Prompt simulator (test prompts against plugin descriptions locally)
+- [ ] SignalR MessagePack binary frame decoding
 - [ ] Session export (JSON/Markdown reports)
 - [ ] Adaptive card rendering preview
-- [ ] Multi-tab conversation correlation
-- [ ] Copilot Studio agent debugging
+- [ ] Multi-turn conversation correlation improvements
+- [ ] Copilot Studio agent debugging (topic routing, knowledge sources)
+- [ ] Prompt simulator for plugin selection testing
 
 ## License
 
@@ -125,4 +99,6 @@ MIT
 
 ## Disclaimer
 
-This is an independent community tool, not affiliated with or endorsed by Microsoft. CopilotCurtain observes Copilot's communication protocol for debugging and educational purposes. The WebSocket protocol may change at any time without notice.
+This is an independent community tool, not affiliated with or endorsed by Microsoft. CopilotCurtain observes Copilot's WebSocket protocol for debugging and educational purposes. The protocol is undocumented and may change at any time without notice.
+
+**This project is vibe-engineered** — built rapidly with AI assistance to explore what's possible. It works, but it needs more testing across different Copilot surfaces, tenant configurations, and edge cases. Use it as a development and learning tool, not as production monitoring infrastructure. Bug reports and contributions are welcome.

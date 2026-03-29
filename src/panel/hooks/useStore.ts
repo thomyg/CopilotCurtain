@@ -100,12 +100,16 @@ export function useFetchConversations() {
   }, [setConversations]);
 }
 
-// Fetch messages for a conversation
+// Fetch messages for a conversation or a group of conversations
 export function useFetchMessages() {
   const setMessages = useStore((s) => s.setMessages);
 
-  return useCallback(async (conversationId: string) => {
-    const res = await chrome.runtime.sendMessage({ type: 'GET_CONVERSATION_MESSAGES', conversationId });
+  return useCallback(async (conversationId: string, conversationIds?: string[]) => {
+    const res = await chrome.runtime.sendMessage({
+      type: 'GET_CONVERSATION_MESSAGES',
+      conversationId,
+      conversationIds,
+    });
     if (res?.data) setMessages(res.data);
   }, [setMessages]);
 }

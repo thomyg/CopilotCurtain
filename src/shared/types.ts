@@ -13,6 +13,13 @@ export interface CopilotConversation {
   lastMessageAt: number;
   messageCount: number;
   surface: CopilotSurface;
+  firstPrompt?: string;
+  defaultChatName?: string;           // from Type 2 StreamItem
+  sensitivityLabel?: string;          // e.g. "Intern", "Allgemein"
+  sensitivityColor?: string;          // e.g. "#3A96DD"
+  isAgent?: boolean;                  // true if threadLevelGptId contains .declarativeAgent
+  agentId?: string;                   // the agent ID from threadLevelGptId
+  agentName?: string;                 // extracted agent display name if available
 }
 
 export type CopilotSurface = 'M365 Chat' | 'Teams' | 'Word' | 'Excel' | 'PowerPoint' | 'Outlook' | 'SharePoint' | 'Unknown';
@@ -35,48 +42,110 @@ export interface CopilotParsedMessage {
   // User prompt
   promptText?: string;
   enabledPlugins?: string[];
-  // Search
+  clientInfo?: Record<string, unknown>;
+  optionsSets?: string[];
+  // Agent detection
+  agentId?: string;                    // threadLevelGptId.id
+  isAgent?: boolean;                   // true if .declarativeAgent in agentId
+  // Search / Progress
   searchQuery?: string;
   searchScope?: string;
   searchResultCount?: number;
   searchResults?: CopilotSource[];
+  progressText?: string;                // "OK, I'll search for..."
   // Response
   responseText?: string;
   rawTextWithMarkers?: string;
   adaptiveCards?: object[];
+  suggestedResponses?: Array<{ text: string; hiddenText?: string }>;
+  // Streaming
+  writeAtCursor?: string;               // Delta token text
+  streamingMode?: 'Full' | 'Delta';
   // Plugin
   pluginName?: string;
   pluginRequest?: object;
   pluginResponse?: object;
   // Sources / Grounding
   sources?: CopilotSource[];
+  sourceCount?: number;                 // Running count during streaming
+  // Conversation state (from Type 2)
+  defaultChatName?: string;             // Auto-generated conversation title
+  sensitivityLabel?: { displayName: string; color: string; tooltip?: string };
+  turnState?: string;                   // "Completed"
+  serviceVersion?: string;
+  // Throttling
+  throttling?: { max: number; current: number };
   // Diagnostics
   contentOrigin?: string;
   diagnosticData?: Record<string, unknown>;
+  // Metrics
+  timestamps?: Record<string, string>;
   // Error / Disengaged
   errorMessage?: string;
 }
 
 export type CopilotMessageType =
   | 'user_prompt'
-  | 'search_query'
-  | 'search_results'
-  | 'response_chunk'
-  | 'response_final'
+  | 'search_progress'       // Progress message with contentType=SearchResults
+  | 'search_query'          // kept for backwards compat
+  | 'search_results'        // kept for backwards compat
+  | 'response_chunk'        // writeAtCursor delta token
+  | 'response_snapshot'     // Full snapshot with accumulated text + growing sourceAttributions
+  | 'response_final'        // Final complete message with all sources + suggestedResponses
+  | 'references_complete'   // ReferencesListComplete signal
+  | 'conversation_state'    // Type 2 StreamItem — full conversation state
+  | 'throttling'            // Throttling info frame
+  | 'suggested_responses'   // Follow-up suggestions
   | 'plugin_call'
   | 'plugin_response'
   | 'diagnostics'
+  | 'metrics'               // Client timing telemetry
   | 'disengaged'
   | 'handshake'
+  | 'completion'            // Type 3 — stream done
   | 'unknown';
 
 export interface CopilotSource {
   title: string;
   url?: string;
-  type: 'file' | 'email' | 'chat' | 'web' | 'meeting' | 'unknown';
+  type: 'file' | 'email' | 'chat' | 'web' | 'meeting' | 'event' | 'person' | 'unknown';
   snippet?: string;
   relevanceScore?: number;
+  // Rich metadata from referenceMetadata (parsed from CITATION)
+  sourceType?: 'CITATION' | 'ANNOTATION';
+  referenceType?: number;          // 0=PPT, 1=XLS, 2=DOC, 3=OneNote, 4=Outlook, 5=Teams, 7=Meeting, 9=SP, 10=Web, 11=PDF
+  fileType?: string;               // Human-readable: "PowerPoint", "Word", etc.
+  dataSource?: string;             // "Exchange", "OneDriveBusiness", "Teams", "SharePoint"
+  context?: string;                // "With Thomas Golles", "modified on 3/9/2026"
+  authorName?: string;
+  authorEmail?: string;
+  citationRefId?: string;          // "turn1search30" — maps to citeturn references in text
+  isCitedInResponse?: boolean;
+  // For ANNOTATION type (People, Events)
+  annotationType?: string;         // "People", "Event"
+  personName?: string;
+  personEmail?: string;
+  eventSubject?: string;
+  eventStart?: string;
 }
+
+// referenceType → human-readable file type mapping
+export const REFERENCE_TYPE_MAP: Record<number, string> = {
+  0: 'PowerPoint',
+  1: 'Excel',
+  2: 'Word',
+  3: 'OneNote',
+  4: 'Email',
+  5: 'Teams Chat',
+  7: 'Meeting',
+  9: 'SharePoint',
+  10: 'Web',
+  11: 'PDF',
+  15: 'Image',
+  17: 'Video',
+  20: 'Third Party',
+  24: 'Loop',
+};
 
 // ---- Plugins ----
 
@@ -196,7 +265,7 @@ export type Message =
   | { type: 'MONITOR_STATUS_RESPONSE'; data: MonitorState }
   | { type: 'GET_CONVERSATIONS' }
   | { type: 'GET_CONVERSATIONS_RESPONSE'; data: CopilotConversation[] }
-  | { type: 'GET_CONVERSATION_MESSAGES'; conversationId: string }
+  | { type: 'GET_CONVERSATION_MESSAGES'; conversationId: string; tabId?: number; conversationIds?: string[] }
   | { type: 'GET_CONVERSATION_MESSAGES_RESPONSE'; data: CopilotWSMessage[] }
   | { type: 'GET_PLUGINS' }
   | { type: 'GET_PLUGINS_RESPONSE'; data: CopilotPlugin[] }

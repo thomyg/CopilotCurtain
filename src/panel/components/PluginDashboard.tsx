@@ -16,7 +16,6 @@ export default function PluginDashboard() {
     return () => clearInterval(i);
   }, [fetchPlugins, fetchInvocations]);
 
-  // Group invocations by plugin
   const invocationsByPlugin = new Map<string, PluginInvocation[]>();
   for (const inv of invocations) {
     const key = inv.pluginId;
@@ -35,17 +34,16 @@ export default function PluginDashboard() {
 
   return (
     <div className="flex flex-col h-full">
-      <div className="px-3 py-2 border-b" style={{ borderColor: 'var(--border)' }}>
-        <span className="text-sm font-semibold text-gray-200">🔌 Plugin Registry & Health</span>
+      <div className="px-3 py-2" style={{ borderBottom: '1px solid var(--border)' }}>
+        <span className="text-sm font-semibold" style={{ color: 'var(--text-primary)' }}>🔌 Plugin Registry & Health</span>
       </div>
 
       <div className="flex-1 overflow-auto">
         {plugins.length === 0 ? (
-          <div className="flex items-center justify-center h-full text-gray-500 text-sm">
+          <div className="flex items-center justify-center h-full" style={{ color: 'var(--text-muted)' }}>
             <div className="text-center">
-              <div className="text-3xl mb-2">🔌</div>
-              <div>No plugins detected yet</div>
-              <div className="text-xs mt-1 text-gray-600">
+              <div className="text-sm" style={{ color: 'var(--text-secondary)' }}>No plugins detected yet</div>
+              <div className="text-xs mt-1" style={{ color: 'var(--text-muted)' }}>
                 Plugins are discovered when Copilot loads its configuration.<br />
                 Start a Copilot conversation to detect available plugins.
               </div>
@@ -55,9 +53,9 @@ export default function PluginDashboard() {
           <div className="p-3 space-y-2">
             {/* Summary */}
             <div className="flex gap-3 mb-3">
-              <StatCard label="Plugins Loaded" value={String(plugins.length)} color="#7c3aed" />
-              <StatCard label="Enabled" value={String(plugins.filter(p => p.enabled).length)} color="#10b981" />
-              <StatCard label="Invocations" value={String(invocations.length)} color="#f59e0b" />
+              <StatCard label="Plugins Loaded" value={String(plugins.length)} color="var(--accent)" />
+              <StatCard label="Enabled" value={String(plugins.filter(p => p.enabled).length)} color="var(--success)" />
+              <StatCard label="Invocations" value={String(invocations.length)} color="var(--warning)" />
             </div>
 
             {/* Plugin list */}
@@ -68,21 +66,23 @@ export default function PluginDashboard() {
               return (
                 <div
                   key={plugin.id}
-                  className={`p-3 rounded border cursor-pointer transition-all ${
-                    isSelected ? 'border-purple-500/50 bg-purple-900/10' : 'border-gray-700/30 bg-gray-800/10 hover:bg-gray-800/30'
-                  }`}
+                  className="p-3 rounded cursor-pointer transition-all"
+                  style={{
+                    border: `1px solid ${isSelected ? 'var(--accent)' : 'var(--border-subtle)'}`,
+                    background: isSelected ? 'var(--surface-selected)' : 'var(--bg-secondary)',
+                  }}
                   onClick={() => setSelectedPlugin(isSelected ? null : plugin.id)}
                 >
                   <div className="flex items-center justify-between">
                     <div className="flex items-center gap-2">
-                      <span className={`w-2 h-2 rounded-full ${plugin.enabled ? 'bg-green-500' : 'bg-gray-500'}`} />
-                      <span className="text-xs font-medium text-gray-200">{plugin.displayName}</span>
-                      <span className="text-xs text-gray-500 px-1 py-0.5 bg-gray-800/50 rounded">{plugin.type}</span>
+                      <span className={`w-2 h-2 rounded-full`} style={{ background: plugin.enabled ? 'var(--success)' : 'var(--text-muted)' }} />
+                      <span className="text-sm font-medium" style={{ color: 'var(--text-primary)' }}>{plugin.displayName}</span>
+                      <span className="text-xs px-1 py-0.5 rounded" style={{ background: 'var(--bg-tertiary)', color: 'var(--text-secondary)' }}>{plugin.type}</span>
                     </div>
                     {stats.total > 0 && (
                       <div className="flex items-center gap-2">
-                        <span className="text-xs text-gray-400">{stats.total} calls</span>
-                        <span className={`text-xs font-mono ${stats.rate >= 80 ? 'text-green-400' : stats.rate >= 50 ? 'text-yellow-400' : 'text-red-400'}`}>
+                        <span className="text-xs" style={{ color: 'var(--text-secondary)' }}>{stats.total} calls</span>
+                        <span className="text-xs font-mono" style={{ color: stats.rate >= 80 ? 'var(--success)' : stats.rate >= 50 ? 'var(--warning)' : 'var(--danger)' }}>
                           {stats.rate.toFixed(0)}%
                         </span>
                       </div>
@@ -90,31 +90,29 @@ export default function PluginDashboard() {
                   </div>
 
                   {plugin.description && (
-                    <div className="text-xs text-gray-500 mt-1 line-clamp-2">{plugin.description}</div>
+                    <div className="text-xs mt-1 line-clamp-2" style={{ color: 'var(--text-muted)' }}>{plugin.description}</div>
                   )}
 
-                  {/* Expanded detail */}
                   {isSelected && stats.total > 0 && (
-                    <div className="mt-3 pt-2 border-t border-gray-700/30 space-y-1.5">
+                    <div className="mt-3 pt-2 space-y-1.5" style={{ borderTop: '1px solid var(--border-subtle)' }}>
                       <div className="flex gap-3 text-xs">
-                        <span className="text-green-400">✓ {stats.success} success</span>
-                        {stats.failed > 0 && <span className="text-red-400">✗ {stats.failed} failed</span>}
-                        <span className="text-gray-400">⏱ {Math.round(stats.avgLatency)}ms avg</span>
+                        <span style={{ color: 'var(--success)' }}>✓ {stats.success} success</span>
+                        {stats.failed > 0 && <span style={{ color: 'var(--danger)' }}>✗ {stats.failed} failed</span>}
+                        <span style={{ color: 'var(--text-secondary)' }}>⏱ {Math.round(stats.avgLatency)}ms avg</span>
                       </div>
 
-                      {/* Recent invocations */}
                       <div className="space-y-1 mt-2">
                         {(invocationsByPlugin.get(plugin.id) || []).slice(0, 5).map((inv) => (
                           <div key={inv.id} className="flex items-center gap-2 text-xs">
-                            <span className={`w-1.5 h-1.5 rounded-full ${
-                              inv.status === 'responded' || inv.status === 'grounded' ? 'bg-green-500' :
-                              inv.status === 'failed' || inv.status === 'timeout' ? 'bg-red-500' : 'bg-yellow-500'
-                            }`} />
-                            <span className="text-gray-500 font-mono w-14">
+                            <span className="w-1.5 h-1.5 rounded-full" style={{
+                              background: inv.status === 'responded' || inv.status === 'grounded' ? 'var(--success)' :
+                                inv.status === 'failed' || inv.status === 'timeout' ? 'var(--danger)' : 'var(--warning)',
+                            }} />
+                            <span className="font-mono w-14" style={{ color: 'var(--text-muted)' }}>
                               {new Date(inv.timestamp).toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit' })}
                             </span>
-                            <span className="text-gray-400 truncate">{inv.status}</span>
-                            {inv.response?.timeMs && <span className="text-gray-500 ml-auto">{inv.response.timeMs}ms</span>}
+                            <span style={{ color: 'var(--text-secondary)' }}>{inv.status}</span>
+                            {inv.response?.timeMs && <span className="ml-auto" style={{ color: 'var(--text-muted)' }}>{inv.response.timeMs}ms</span>}
                           </div>
                         ))}
                       </div>
@@ -132,9 +130,9 @@ export default function PluginDashboard() {
 
 function StatCard({ label, value, color }: { label: string; value: string; color: string }) {
   return (
-    <div className="flex-1 p-2 rounded border border-gray-700/30 bg-gray-800/10">
+    <div className="flex-1 p-2 rounded" style={{ border: '1px solid var(--border-subtle)', background: 'var(--bg-secondary)' }}>
       <div className="text-lg font-bold" style={{ color }}>{value}</div>
-      <div className="text-xs text-gray-500">{label}</div>
+      <div className="text-xs" style={{ color: 'var(--text-muted)' }}>{label}</div>
     </div>
   );
 }

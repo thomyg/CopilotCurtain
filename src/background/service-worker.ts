@@ -105,7 +105,7 @@ setOnNewMessage((msg: CopilotWSMessage) => {
   messageCount++;
 
   // Track search queries
-  if (msg.parsed.type === 'search_query' || msg.parsed.type === 'search_results') {
+  if (msg.parsed.type === 'search_progress' || msg.parsed.type === 'search_query' || msg.parsed.type === 'search_results') {
     searchQueryCount++;
   }
 
@@ -155,9 +155,9 @@ function updateBadge() {
     return;
   }
 
-  if (messageCount > 0) {
-    chrome.action.setBadgeText({ text: messageCount > 999 ? '999+' : String(messageCount) });
-    chrome.action.setBadgeBackgroundColor({ color: '#7c3aed' }); // Copilot purple
+  if (conversationCount > 0) {
+    chrome.action.setBadgeText({ text: String(conversationCount) });
+    chrome.action.setBadgeBackgroundColor({ color: '#0f6cbd' });
   } else {
     chrome.action.setBadgeText({ text: '' });
   }
@@ -241,13 +241,22 @@ async function handleMessage(message: Message): Promise<any> {
     }
 
     case 'MONITOR_STATUS': {
+      // Use stored count if in-memory is stale (e.g. after service worker restart)
+      let effectiveConvCount = conversationCount;
+      if (effectiveConvCount === 0) {
+        try {
+          const storedConvs = await getConversations();
+          effectiveConvCount = storedConvs.length;
+          conversationCount = effectiveConvCount;
+        } catch {}
+      }
       const state: MonitorState = {
         httpEnabled: getMonitoring(),
         wsEnabled,
         activeSessionId: getActiveSessionId(),
         activeSessionName: sessionName,
         sessionStartedAt,
-        conversationCount,
+        conversationCount: effectiveConvCount,
         messageCount,
         pluginInvocationCount,
         searchQueryCount,
@@ -261,8 +270,15 @@ async function handleMessage(message: Message): Promise<any> {
     }
 
     case 'GET_CONVERSATION_MESSAGES': {
-      const msgs = await getConversationMessages(message.conversationId);
-      return { type: 'GET_CONVERSATION_MESSAGES_RESPONSE', data: msgs };
+      // Fetch messages for multiple conversation IDs (grouped multi-turn)
+      const ids = message.conversationIds || [message.conversationId];
+      const allMsgs: CopilotWSMessage[] = [];
+      for (const cid of ids) {
+        const msgs = await getConversationMessages(cid);
+        allMsgs.push(...msgs);
+      }
+      allMsgs.sort((a, b) => a.timestamp - b.timestamp);
+      return { type: 'GET_CONVERSATION_MESSAGES_RESPONSE', data: allMsgs };
     }
 
     case 'GET_PLUGINS': {
@@ -322,6 +338,12 @@ async function initialize() {
     sessionStartedAt = stored.sessionStartedAt || null;
     if (!stored.httpEnabled) startListeners();
   }
+
+  // Restore counters from IndexedDB
+  try {
+    const storedConvs = await getConversations();
+    conversationCount = storedConvs.length;
+  } catch {}
 
   // Watch for new tabs navigating to Copilot
   watchForCopilotTabs();

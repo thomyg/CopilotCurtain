@@ -1,10 +1,27 @@
-import type { CopilotParsedMessage, CopilotMessageType, CopilotSource } from '../shared/types';
+import type { CopilotParsedMessage, CopilotSource, REFERENCE_TYPE_MAP } from '../shared/types';
 
-// The Copilot WebSocket protocol uses JSON messages
-// separated by ASCII Record Separator (0x1E).
-// Each frame may contain one or more JSON objects.
+// M365 Copilot WebSocket Protocol Decoder
+// Based on HAR analysis of real Copilot chat sessions (2026-03)
+//
+// Protocol: SignalR JSON over WebSocket
+// Frames separated by ASCII Record Separator (0x1E)
+// Endpoint: substrate.office.com/m365Copilot/Chathub/{userId}@{tenantId}
+//
+// SignalR message types:
+//   (none) = Handshake
+//   1 = Invocation (server: target="update", client: target="Metrics")
+//   2 = StreamItem (final conversation state)
+//   3 = Completion (stream done)
+//   4 = StreamInvocation (client: target="chat" — user prompt)
+//   6 = Ping
 
 const RECORD_SEPARATOR = '\x1e';
+
+const REF_TYPE_MAP: Record<number, string> = {
+  0: 'PowerPoint', 1: 'Excel', 2: 'Word', 3: 'OneNote',
+  4: 'Email', 5: 'Teams Chat', 7: 'Meeting', 9: 'SharePoint',
+  10: 'Web', 11: 'PDF', 15: 'Image', 17: 'Video', 20: 'Third Party', 24: 'Loop',
+};
 
 export interface DecodedFrame {
   messageType: number;
@@ -23,41 +40,49 @@ export function decodeFrame(raw: string, direction: 'sent' | 'received'): Decode
         parsed: direction === 'sent' ? parseSentMessage(json) : parseReceivedMessage(json),
       });
     } catch {
-      results.push({
-        messageType: 0,
-        parsed: { type: 'unknown' },
-      });
+      results.push({ messageType: 0, parsed: { type: 'unknown' } });
     }
   }
 
   return results;
 }
 
-// ---- Parse outbound messages (user → Copilot) ----
+// ============================================================
+// SENT messages (client → Copilot)
+// ============================================================
 
 function parseSentMessage(json: any): CopilotParsedMessage {
-  // Handshake message (protocol negotiation)
+  // Handshake
   if (json.protocol && json.version) {
-    return {
-      type: 'handshake',
-      diagnosticData: { protocol: json.protocol, version: json.version },
-    };
+    return { type: 'handshake', diagnosticData: { protocol: json.protocol, version: json.version } };
   }
 
-  // User prompt message
-  // Structure: { type: 4, invocationId: "0", target: "chat", arguments: [{ message: "...", plugins: [...] }] }
-  // Also seen: { type: 1, target: "chat", arguments: [...] }
+  // Type 6: Ping
+  if (json.type === 6) {
+    return { type: 'unknown' };
+  }
+
+  // Type 4: StreamInvocation — THE user prompt
+  if (json.type === 4 && json.target === 'chat') {
+    return parseUserPrompt(json);
+  }
+
+  // Type 1, target="Metrics" — client timing telemetry
+  if (json.type === 1 && json.target === 'Metrics') {
+    const timestamps = json.arguments?.[0]?.Timestamps;
+    return { type: 'metrics', timestamps };
+  }
+
+  // Type 1 with arguments — older prompt format (fallback)
   if (json.arguments && Array.isArray(json.arguments)) {
     const args = json.arguments[0];
     if (args) {
       const prompt = extractPromptText(args);
-      const plugins = extractPluginList(args);
-
       if (prompt) {
         return {
           type: 'user_prompt',
           promptText: prompt,
-          enabledPlugins: plugins,
+          enabledPlugins: extractPluginList(args),
         };
       }
     }
@@ -66,8 +91,34 @@ function parseSentMessage(json: any): CopilotParsedMessage {
   return { type: 'unknown' };
 }
 
+function parseUserPrompt(json: any): CopilotParsedMessage {
+  const args = json.arguments?.[0];
+  if (!args) return { type: 'user_prompt' };
+
+  const msg = args.message;
+  const prompt = msg?.text || msg?.content || '';
+  const plugins = extractPluginList(args);
+
+  // Agent detection: gpts[] array or threadLevelGptId with .declarativeAgent
+  const gpts = args.gpts;
+  const threadGptId = args.threadLevelGptId?.id || '';
+  const hasGpts = Array.isArray(gpts) && gpts.length > 0;
+  const isAgent = hasGpts || threadGptId.includes('.declarativeAgent') || threadGptId.includes('.agent');
+  const agentId = hasGpts ? gpts[0].id : (threadGptId || undefined);
+
+  return {
+    type: 'user_prompt',
+    promptText: prompt,
+    enabledPlugins: plugins,
+    clientInfo: args.clientInfo,
+    optionsSets: args.optionsSets,
+    searchScope: msg?.entityAnnotationTypes?.join(', '),
+    agentId,
+    isAgent: isAgent || undefined,
+  };
+}
+
 function extractPromptText(args: any): string | undefined {
-  // Try common paths for the user's message text
   if (typeof args.message === 'string') return args.message;
   if (args.message?.text) return args.message.text;
   if (args.message?.content) return args.message.content;
@@ -77,11 +128,11 @@ function extractPromptText(args: any): string | undefined {
 
 function extractPluginList(args: any): string[] {
   const plugins: string[] = [];
-  // Try common paths for plugin configuration
   const pluginDefs = args.plugins || args.enabledPlugins || args.options?.plugins;
   if (Array.isArray(pluginDefs)) {
     for (const p of pluginDefs) {
       if (typeof p === 'string') plugins.push(p);
+      else if (p.Id) plugins.push(p.Id);
       else if (p.id) plugins.push(p.id);
       else if (p.name) plugins.push(p.name);
     }
@@ -89,192 +140,362 @@ function extractPluginList(args: any): string[] {
   return plugins;
 }
 
-// ---- Parse inbound messages (Copilot → user) ----
+// ============================================================
+// RECEIVED messages (Copilot → client)
+// ============================================================
 
 function parseReceivedMessage(json: any): CopilotParsedMessage {
   const msgType = json.type;
 
-  // Type 1: streaming data (incremental response, search events, plugin events)
-  if (msgType === 1) {
-    return parseStreamingMessage(json);
-  }
-
-  // Type 2: final/completion message
-  if (msgType === 2) {
-    return {
-      type: 'response_final',
-      diagnosticData: json.item || json,
-    };
-  }
-
-  // Type 3: error
-  if (msgType === 3) {
-    return {
-      type: 'disengaged',
-      errorMessage: json.error || 'Unknown error',
-    };
-  }
-
-  // Type 6: handshake response
-  if (msgType === 6) {
+  // Handshake response: {} (no type field)
+  if (msgType === undefined && Object.keys(json).length === 0) {
     return { type: 'handshake' };
   }
 
-  // Type 7: keep-alive ping
-  if (msgType === 7) {
-    return { type: 'unknown' }; // Ignore pings
+  // Type 6: Ping
+  if (msgType === 6) return { type: 'unknown' };
+
+  // Type 3: Completion — stream done
+  if (msgType === 3) {
+    return { type: 'completion' };
+  }
+
+  // Type 2: StreamItem — final conversation state
+  if (msgType === 2) {
+    return parseStreamItem(json);
+  }
+
+  // Type 1: Invocation — all server responses (target="update")
+  if (msgType === 1) {
+    return parseUpdateFrame(json);
   }
 
   return { type: 'unknown' };
 }
 
-function parseStreamingMessage(json: any): CopilotParsedMessage {
-  // Type 1 messages carry data in arguments[0].messages[]
-  const args = json.arguments?.[0];
-  if (!args) {
-    return { type: 'response_chunk' };
-  }
+// ---- Type 2: StreamItem (final conversation state) ----
 
-  const messages = args.messages;
-  if (!Array.isArray(messages) || messages.length === 0) {
-    // May be a throttling/progress indicator
-    return { type: 'response_chunk' };
-  }
+function parseStreamItem(json: any): CopilotParsedMessage {
+  const item = json.item;
+  if (!item) return { type: 'conversation_state', diagnosticData: json };
 
-  // Process each sub-message
+  const messages: any[] = item.messages || [];
+  const sources: CopilotSource[] = [];
+  let responseText: string | undefined;
+  let suggestedResponses: Array<{ text: string; hiddenText?: string }> | undefined;
+  let hintInvocations: string[] = [];
+
   for (const msg of messages) {
-    const contentOrigin = msg.contentOrigin || msg.author;
+    if (msg.author === 'user') continue;
 
-    // Search query event
-    if (msg.messageType === 'InternalSearchQuery' || contentOrigin === 'SubstrateSearchService') {
-      return parseSearchMessage(msg);
+    // HintInvocations (language detection, etc.)
+    if (msg.messageType === 'HintInvocation') {
+      hintInvocations.push(msg.invocation || '');
+      continue;
     }
 
-    // Plugin invocation
-    if (msg.messageType === 'InternalToolInvocation' || msg.contentType === 'TOOL_INVOCATION') {
-      return parsePluginMessage(msg);
+    // Bot response with sourceAttributions
+    if (msg.sourceAttributions) {
+      sources.push(...parseSourceAttributions(msg.sourceAttributions));
     }
 
-    // Content filter / safety
-    if (contentOrigin === 'OffensiveRequestClassifier') {
-      return {
-        type: 'diagnostics',
-        contentOrigin,
-        diagnosticData: msg,
-      };
+    // Suggested responses
+    if (msg.suggestedResponses) {
+      suggestedResponses = msg.suggestedResponses.map((s: any) => ({
+        text: s.text || s.commandText,
+        hiddenText: s.hiddenText,
+      }));
     }
 
-    // Regular response text
-    if (msg.text || msg.adaptiveCards) {
-      return parseResponseMessage(msg, contentOrigin);
+    // Main response text
+    if (msg.author === 'bot' && msg.text && !msg.messageType) {
+      responseText = msg.text;
     }
+  }
+
+  return {
+    type: 'conversation_state',
+    defaultChatName: item.defaultChatName,
+    turnState: item.turnState,
+    serviceVersion: item.result?.serviceVersion,
+    sensitivityLabel: item.conversationSensitivityLabel ? {
+      displayName: item.conversationSensitivityLabel.displayName,
+      color: item.conversationSensitivityLabel.color,
+      tooltip: item.conversationSensitivityLabel.tooltip,
+    } : undefined,
+    throttling: item.throttling ? {
+      max: item.throttling.maxNumUserMessagesInConversation,
+      current: item.throttling.numUserMessagesInConversation,
+    } : undefined,
+    responseText,
+    sources: sources.length > 0 ? sources : undefined,
+    sourceCount: sources.length,
+    suggestedResponses,
+    diagnosticData: {
+      hintInvocations,
+      conversationId: item.conversationId,
+      turnState: item.turnState,
+      result: item.result?.value,
+    },
+  };
+}
+
+// ---- Type 1: Update frames (the bulk of the protocol) ----
+
+function parseUpdateFrame(json: any): CopilotParsedMessage {
+  const args = json.arguments?.[0];
+  if (!args) return { type: 'response_chunk' };
+
+  // 1. Throttling frame (has throttling, no messages)
+  if (args.throttling && !args.messages) {
+    return {
+      type: 'throttling',
+      throttling: {
+        max: args.throttling.maxNumUserMessagesInConversation,
+        current: args.throttling.numUserMessagesInConversation,
+      },
+    };
+  }
+
+  // 2. Streaming token frame (has writeAtCursor)
+  if (args.writeAtCursor !== undefined) {
+    const sources = args.sourceAttributions?.length > 0
+      ? parseSourceAttributions(args.sourceAttributions)
+      : undefined;
+    return {
+      type: 'response_chunk',
+      writeAtCursor: args.writeAtCursor,
+      streamingMode: 'Delta',
+      sources,
+      sourceCount: args.sourceAttributions?.length || 0,
+    };
+  }
+
+  // 3. Message frame (has messages[])
+  if (args.messages && Array.isArray(args.messages) && args.messages.length > 0) {
+    return parseMessageFrame(args);
   }
 
   return { type: 'response_chunk' };
 }
 
-function parseSearchMessage(msg: any): CopilotParsedMessage {
-  const result: CopilotParsedMessage = {
-    type: 'search_query',
-    contentOrigin: msg.contentOrigin || 'SubstrateSearchService',
-  };
+function parseMessageFrame(args: any): CopilotParsedMessage {
+  const msg = args.messages[0];
+  const messageType = msg.messageType || '';
+  const contentType = msg.contentType || '';
+  const contentOrigin = msg.contentOrigin || msg.author || '';
 
-  // Extract the search query text
-  if (msg.text) {
-    try {
-      const parsed = JSON.parse(msg.text);
-      result.searchQuery = parsed.query || parsed.QueryString || msg.text;
-      result.searchScope = parsed.scope || parsed.EntityTypes?.join(', ');
-    } catch {
-      result.searchQuery = msg.text;
-    }
+  // Progress message (search indicator)
+  if (messageType === 'Progress') {
+    return {
+      type: 'search_progress',
+      progressText: msg.text || '',
+      searchQuery: msg.text || '',
+      contentOrigin,
+      searchScope: contentType === 'SearchResults' ? 'SearchResults' : contentType,
+    };
   }
 
-  // Extract search results if present
-  if (msg.groundingInfo || msg.sourceAttributions) {
-    result.type = 'search_results';
-    result.sources = extractSources(msg);
-    result.searchResultCount = result.sources.length;
+  // ReferencesListComplete
+  if (messageType === 'ReferencesListComplete') {
+    return { type: 'references_complete' };
   }
 
-  return result;
-}
+  // HintInvocation (rare in update frames, common in Type 2)
+  if (messageType === 'HintInvocation') {
+    return {
+      type: 'diagnostics',
+      contentOrigin: msg.contentOrigin || 'HintGenerator',
+      diagnosticData: { invocation: msg.invocation, messageType },
+    };
+  }
 
-function parsePluginMessage(msg: any): CopilotParsedMessage {
+  // Plugin invocation
+  if (messageType === 'InternalToolInvocation' || messageType === 'TriggerPlugin') {
+    return {
+      type: 'plugin_call',
+      pluginName: msg.toolName || msg.pluginName || msg.invocationInfo?.toolName || 'Unknown Plugin',
+      pluginRequest: msg.invocationInfo || msg,
+      contentOrigin,
+    };
+  }
+
+  // Content filter / safety
+  if (contentOrigin === 'OffensiveRequestClassifier') {
+    return { type: 'diagnostics', contentOrigin, diagnosticData: msg };
+  }
+
+  // Disengaged
+  if (messageType === 'Disengaged') {
+    return { type: 'disengaged', errorMessage: msg.text || 'Copilot disengaged' };
+  }
+
+  // Regular response snapshot (streamingMode=Full)
+  const sources = msg.sourceAttributions?.length > 0
+    ? parseSourceAttributions(msg.sourceAttributions)
+    : undefined;
+
+  const suggestedResponses = msg.suggestedResponses?.map((s: any) => ({
+    text: s.text || s.commandText,
+    hiddenText: s.hiddenText,
+  }));
+
+  // Is this the FINAL complete message? (has suggestedResponses or large sourceAttributions)
+  const isFinal = suggestedResponses && suggestedResponses.length > 0;
+
   return {
-    type: 'plugin_call',
-    pluginName: msg.toolName || msg.pluginName || msg.invocationInfo?.toolName || 'Unknown Plugin',
-    pluginRequest: msg.invocationInfo || msg,
-    contentOrigin: msg.contentOrigin,
-  };
-}
-
-function parseResponseMessage(msg: any, contentOrigin?: string): CopilotParsedMessage {
-  const result: CopilotParsedMessage = {
-    type: 'response_chunk',
+    type: isFinal ? 'response_final' : 'response_snapshot',
+    responseText: msg.text,
+    rawTextWithMarkers: msg.hiddenText,
+    adaptiveCards: msg.adaptiveCards,
+    sources,
+    sourceCount: msg.sourceAttributions?.length || 0,
+    suggestedResponses,
     contentOrigin,
+    streamingMode: args.streamingMode || 'Full',
+    sensitivityLabel: msg.sensitivityLabel ? {
+      displayName: msg.sensitivityLabel.displayName,
+      color: msg.sensitivityLabel.color,
+    } : undefined,
+    diagnosticData: msg.scores ? { scores: msg.scores } : undefined,
   };
-
-  // Extract response text
-  if (msg.text) {
-    result.responseText = msg.text;
-  }
-
-  // Hidden text with reference markers
-  if (msg.hiddenText) {
-    result.rawTextWithMarkers = msg.hiddenText;
-  }
-
-  // Adaptive cards
-  if (msg.adaptiveCards && Array.isArray(msg.adaptiveCards)) {
-    result.adaptiveCards = msg.adaptiveCards;
-  }
-
-  // Source attributions
-  if (msg.sourceAttributions) {
-    result.sources = extractSources(msg);
-  }
-
-  return result;
 }
 
-// ---- Source extraction ----
+// ============================================================
+// Source attribution parsing
+// ============================================================
 
-function extractSources(msg: any): CopilotSource[] {
+function parseSourceAttributions(attributions: any[]): CopilotSource[] {
   const sources: CopilotSource[] = [];
 
-  // From sourceAttributions array
-  const attributions = msg.sourceAttributions || [];
   for (const attr of attributions) {
-    sources.push({
-      title: attr.displayName || attr.providerDisplayName || attr.seeMoreUrl || 'Unknown',
-      url: attr.seeMoreUrl || attr.url,
-      type: inferSourceType(attr),
-      snippet: attr.searchResultSnippet || attr.snippet,
-    });
-  }
+    if (!attr.sourceType && !attr.providerDisplayName && !attr.seeMoreUrl) continue;
 
-  // From groundingInfo
-  if (msg.groundingInfo?.web_search_results) {
-    for (const r of msg.groundingInfo.web_search_results) {
-      sources.push({
-        title: r.title || r.name || 'Web Result',
-        url: r.url,
-        type: 'web',
-        snippet: r.snippet,
-      });
+    if (attr.sourceType === 'ANNOTATION') {
+      sources.push(parseAnnotationSource(attr));
+    } else {
+      // CITATION or legacy format
+      sources.push(parseCitationSource(attr));
     }
   }
 
   return sources;
 }
 
-function inferSourceType(attr: any): CopilotSource['type'] {
-  const url = (attr.seeMoreUrl || attr.url || '').toLowerCase();
-  if (url.includes('sharepoint.com') || url.includes('onedrive')) return 'file';
-  if (url.includes('outlook') || url.includes('mail')) return 'email';
-  if (url.includes('teams')) return 'chat';
-  if (url.includes('calendar') || url.includes('event')) return 'meeting';
-  if (url.startsWith('http')) return 'web';
+function parseCitationSource(attr: any): CopilotSource {
+  const source: CopilotSource = {
+    title: attr.providerDisplayName || attr.displayName || 'Unknown',
+    url: attr.seeMoreUrl || attr.url,
+    type: 'unknown',
+    sourceType: 'CITATION',
+    isCitedInResponse: attr.isCitedInResponse === 'True' || attr.isCitedInResponse === true,
+  };
+
+  // Parse referenceMetadata (double-encoded JSON string)
+  if (attr.referenceMetadata) {
+    try {
+      const meta = typeof attr.referenceMetadata === 'string'
+        ? JSON.parse(attr.referenceMetadata)
+        : attr.referenceMetadata;
+
+      source.referenceType = meta.referenceType;
+      source.fileType = REF_TYPE_MAP[meta.referenceType] || meta.type || meta.typeDescription;
+      source.dataSource = meta.dataSource;
+      source.context = meta.context;
+      source.authorName = meta.authorName;
+      source.authorEmail = meta.authorEmail;
+      source.citationRefId = meta.citationRefId;
+
+      // Better URL from metadata
+      if (!source.url && meta.defaultEncodingUrl) {
+        source.url = meta.defaultEncodingUrl;
+      }
+
+      // Map referenceType to source.type
+      source.type = mapReferenceTypeToSourceType(meta.referenceType, meta.dataSource);
+
+      // Better title from metadata if displayName is a URL
+      if (source.title.startsWith('http') && meta.type) {
+        source.title = meta.type;
+      }
+    } catch {
+      // referenceMetadata parse failed — use URL-based inference
+      source.type = inferSourceTypeFromUrl(source.url || '');
+    }
+  } else {
+    source.type = inferSourceTypeFromUrl(source.url || '');
+  }
+
+  // Snippet
+  if (attr.searchResultSnippet || attr.snippet) {
+    source.snippet = attr.searchResultSnippet || attr.snippet;
+  }
+
+  return source;
+}
+
+function parseAnnotationSource(attr: any): CopilotSource {
+  const source: CopilotSource = {
+    title: '',
+    url: attr.seeMoreUrl,
+    type: 'unknown',
+    sourceType: 'ANNOTATION',
+    annotationType: attr.type,
+    isCitedInResponse: attr.isCitedInResponse === 'True',
+  };
+
+  // Parse metadata (JSON string)
+  if (attr.metadata) {
+    try {
+      const meta = typeof attr.metadata === 'string' ? JSON.parse(attr.metadata) : attr.metadata;
+
+      if (attr.type === 'People') {
+        source.type = 'person';
+        source.personName = meta.name || meta.address;
+        source.personEmail = meta.address;
+        source.title = meta.name || meta.address || 'Person';
+      } else if (attr.type === 'Event') {
+        source.type = 'event';
+        const eventData = meta.Source || meta;
+        source.eventSubject = eventData.Subject;
+        source.eventStart = eventData.Start;
+        source.title = eventData.Subject || 'Event';
+      } else {
+        source.title = attr.type || 'Annotation';
+      }
+    } catch {
+      source.title = attr.type || 'Annotation';
+    }
+  }
+
+  return source;
+}
+
+function mapReferenceTypeToSourceType(refType: number, dataSource?: string): CopilotSource['type'] {
+  switch (refType) {
+    case 0: case 1: case 2: case 3: case 11: case 15: case 17: case 24:
+      return 'file';
+    case 4:
+      return 'email';
+    case 5:
+      return 'chat';
+    case 7:
+      return 'meeting';
+    case 9:
+      return dataSource === 'SharePoint' ? 'file' : 'web';
+    case 10:
+      return 'web';
+    default:
+      return 'unknown';
+  }
+}
+
+function inferSourceTypeFromUrl(url: string): CopilotSource['type'] {
+  const u = url.toLowerCase();
+  if (u.includes('sharepoint.com') || u.includes('onedrive')) return 'file';
+  if (u.includes('outlook') || u.includes('/owa/')) return 'email';
+  if (u.includes('teams.microsoft.com/l/message')) return 'chat';
+  if (u.includes('/meeting/details') || u.includes('eventid=')) return 'meeting';
+  if (u.startsWith('http')) return 'web';
   return 'unknown';
 }
