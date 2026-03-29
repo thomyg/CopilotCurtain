@@ -4,13 +4,15 @@ import { MESSAGE_TYPE_CONFIG } from '../../shared/constants';
 import { useStore, useFetchMessages } from '../hooks/useStore';
 import MessageDetail from './MessageDetail';
 import ExportButton from './ExportButton';
+import SearchCorrelation from './SearchCorrelation';
+import AgentConfig from './AgentConfig';
 
 interface Props {
   conversation: CopilotConversation;
   groupIds?: string[];
 }
 
-type FilterMode = 'all' | 'key-events' | 'searches' | 'plugins';
+type FilterMode = 'all' | 'key-events' | 'searches' | 'search-http' | 'plugins' | 'agent';
 
 type TimelineEntry =
   | { type: 'message'; message: CopilotWSMessage }
@@ -130,7 +132,9 @@ export default function ConversationTimeline({ conversation, groupIds }: Props) 
   const filters: { id: FilterMode; label: string; count?: number }[] = [
     { id: 'key-events', label: 'Key Events' },
     { id: 'searches', label: 'Searches', count: counts.searches },
+    { id: 'search-http', label: 'Search HTTP' },
     { id: 'plugins', label: 'Plugins', count: counts.plugins },
+    { id: 'agent', label: conversation.isAgent ? 'Agent' : 'Config' },
     { id: 'all', label: 'All' },
   ];
 
@@ -175,7 +179,21 @@ export default function ConversationTimeline({ conversation, groupIds }: Props) 
         ))}
       </div>
 
-      {/* Timeline */}
+      {/* Special views */}
+      {filter === 'search-http' && (
+        <div className="flex-1 overflow-auto p-3">
+          <SearchCorrelation messages={messages} />
+        </div>
+      )}
+
+      {filter === 'agent' && (
+        <div className="flex-1 overflow-auto">
+          <AgentConfig conversation={conversation} />
+        </div>
+      )}
+
+      {/* Timeline (for all other filters) */}
+      {filter !== 'search-http' && filter !== 'agent' && (
       <div className="flex-1 overflow-auto p-2 space-y-0.5">
         {timeline.length === 0 ? (
           <div className="text-center text-sm py-8" style={{ color: 'var(--text-muted)' }}>
@@ -251,6 +269,7 @@ export default function ConversationTimeline({ conversation, groupIds }: Props) 
           })
         )}
       </div>
+      )}
 
       {/* Resizable detail panel */}
       {selectedMsg && (

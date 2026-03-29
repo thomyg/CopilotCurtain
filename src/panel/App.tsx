@@ -6,8 +6,9 @@ import ConversationTimeline from './components/ConversationTimeline';
 import ConversationFlow from './components/ConversationFlow';
 import PluginDashboard from './components/PluginDashboard';
 import HttpTraffic from './components/HttpTraffic';
+import GlobalSearch from './components/GlobalSearch';
 
-type View = 'conversations' | 'flow' | 'plugins' | 'http';
+type View = 'conversations' | 'flow' | 'plugins' | 'http' | 'search';
 
 export default function App() {
   const [view, setView] = useState<View>('conversations');
@@ -31,9 +32,9 @@ export default function App() {
     { id: 'flow', label: 'Flow', emoji: '⚡' },
     { id: 'plugins', label: 'Plugins', emoji: '🔌' },
     { id: 'http', label: 'HTTP', emoji: '📡' },
+    { id: 'search', label: 'Search', emoji: '🔍' },
   ];
 
-  // Shared conversation picker for both conversations and flow views
   const showConvList = view === 'conversations' || view === 'flow';
 
   return (
@@ -161,6 +162,7 @@ export default function App() {
 
       {view === 'plugins' && <div className="flex-1"><PluginDashboard /></div>}
       {view === 'http' && <div className="flex-1"><HttpTraffic /></div>}
+      {view === 'search' && <div className="flex-1"><GlobalSearch /></div>}
     </div>
   );
 }
