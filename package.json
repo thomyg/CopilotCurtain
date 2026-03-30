@@ -1,6 +1,6 @@
 {
   "name": "copilot-curtain",
-  "version": "1.0.0",
+  "version": "0.0.1",
   "description": "Chrome/Edge extension for M365 Copilot developers and IT Pros",
   "private": true,
   "type": "module",
